@@ -34,9 +34,9 @@ pip install \
 # ── Project setup ────────────────────────────────────────────────────────────
 S3_BUCKET="bstoner-llm-checkpoints-536277006919"
 
-# Clone repo (replace with your actual repo URL)
-# git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git llm-project
-# cd llm-project
+# Clone repo
+git clone https://github.com/sandbreak80/llm-350m.git llm-project
+cd llm-project
 
 # Make project importable
 pip install -e .
