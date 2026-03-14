@@ -101,7 +101,7 @@ def save_checkpoint(model, optimizer, scheduler_iter, val_loss, cfg: "TrainConfi
 
 
 def load_checkpoint(path: Path, model, optimizer) -> tuple[int, float]:
-    checkpoint = torch.load(path, map_location="cpu")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     raw_model = model.module if isinstance(model, DDP) else model
     raw_model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
