@@ -10,17 +10,12 @@ echo "=== LLM Training Environment Setup ==="
 # ── System packages (Amazon Linux 2023) ──────────────────────────────────────
 sudo dnf install -y git tmux htop
 
-# ── Python dependencies ──────────────────────────────────────────────────────
-pip install --upgrade pip
+# ── Python environment — DLAMI uses /opt/pytorch (Python 3.12, PyTorch 2.7) ──
+PIP="/opt/pytorch/bin/pip"
+PYTHON="/opt/pytorch/bin/python"
 
-# Core ML stack — PyTorch 2.7 is pre-installed on the DLAMI, upgrade if needed
-pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu124
-
-# Flash Attention 2 (requires CUDA toolkit — pre-installed on DLAMI)
-pip install flash-attn --no-build-isolation
-
-# Training dependencies
-pip install \
+# PyTorch 2.7 + CUDA 12.8 are pre-installed — skip reinstall, just add deps
+"$PIP" install --quiet \
     transformers \
     datasets \
     tiktoken \
@@ -31,15 +26,17 @@ pip install \
     safetensors \
     huggingface_hub
 
+# Flash Attention 2
+"$PIP" install flash-attn --no-build-isolation --quiet
+
 # ── Project setup ────────────────────────────────────────────────────────────
 S3_BUCKET="bstoner-llm-checkpoints-536277006919"
 
-# Clone repo
-git clone https://github.com/sandbreak80/llm-350m.git llm-project
-cd llm-project
+# Repo already cloned by user-data — just install it
+cd /home/ec2-user/llm-project
 
 # Make project importable
-pip install -e .
+"$PIP" install -e . --quiet
 
 # ── Storage setup ────────────────────────────────────────────────────────────
 # Create data and checkpoint directories
@@ -55,9 +52,9 @@ echo ""
 echo "Next steps:"
 echo "  1. Configure W&B: wandb login"
 echo "  2. Configure HuggingFace: huggingface-cli login"
-echo "  3. Prepare data: python src/data/prepare.py --dataset all"
+echo "  3. Prepare data: /opt/pytorch/bin/python src/data/prepare.py --dataset all"
 echo "  4. Start pretraining in tmux: tmux new -s train"
-echo "     python src/training/train.py --config configs/pretrain_350m.yaml"
+echo "     /opt/pytorch/bin/python src/training/train.py --config configs/pretrain_350m.yaml"
 echo ""
 echo "  Monitor GPU: nvtop"
 echo "  Check costs: aws ce get-cost-and-usage ..."
