@@ -26,8 +26,8 @@ PYTHON="/opt/pytorch/bin/python"
     safetensors \
     huggingface_hub
 
-# Flash Attention 2
-"$PIP" install flash-attn --no-build-isolation --quiet
+# Note: flash-attn package not needed — we use F.scaled_dot_product_attention
+# (PyTorch 2.0+ uses Flash Attention 2 kernels natively via SDPA)
 
 # ── Project setup ────────────────────────────────────────────────────────────
 S3_BUCKET="bstoner-llm-checkpoints-536277006919"
