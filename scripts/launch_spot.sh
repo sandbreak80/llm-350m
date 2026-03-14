@@ -15,7 +15,7 @@ SPOT_PRICE="0.60"                  # Max bid (on-demand ~$1.006, spot ~$0.35-0.6
 AMI_ID="ami-0de4ae9106f688338"     # Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (AL2023) 20260307
 KEY_NAME="llm-training-key"        # EC2 key pair (~/.ssh/llm-training-key.pem)
 SECURITY_GROUP="sg-0debdff8b288db1fa"   # llm-training-sg (SSH from your IP only)
-SUBNET_ID="subnet-071e249714e0e8424"    # us-east-1d — g5 available here
+SUBNET_ID="subnet-0277da3975efdf31d"    # us-east-1f — g5 available here
 S3_BUCKET="bstoner-llm-checkpoints-536277006919"
 IAM_INSTANCE_PROFILE="LLMTrainingProfile"
 

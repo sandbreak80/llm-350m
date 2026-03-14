@@ -1,5 +1,5 @@
 # Data and checkpoints (large files)
-data/
+/data/
 checkpoints/
 hf_export/
 *.bin
