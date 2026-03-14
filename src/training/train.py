@@ -54,10 +54,13 @@ class PretrainDataset(Dataset):
         self.block_size = block_size
 
     def __len__(self) -> int:
-        return len(self.data) - self.block_size
+        # Number of complete sequences — NOT token count.
+        # Token count (~9.9B) causes randperm to allocate 79GB.
+        return len(self.data) // self.block_size
 
     def __getitem__(self, idx: int):
-        chunk = torch.from_numpy(self.data[idx : idx + self.block_size + 1].astype(int))
+        start = idx * self.block_size
+        chunk = torch.from_numpy(self.data[start : start + self.block_size + 1].astype(int))
         return chunk[:-1].long(), chunk[1:].long()
 
 
