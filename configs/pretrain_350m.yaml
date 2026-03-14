@@ -1,7 +1,5 @@
 # Pretraining config — 350M model on FineWeb-Edu 10BT
-# Target hardware: AWS g5.xlarge (A10G 24GB) @ ~$1/hr
-# Estimated training time: ~160-200 hours
-# Estimated cost: ~$160-$200 (well within $1000 budget)
+# Target hardware: AWS g5.xlarge (A10G 24GB) @ ~$0.45/hr spot
 
 data_dir: data
 
@@ -30,6 +28,6 @@ checkpoint_dir: checkpoints/pretrain
 # W&B logging (set to "" to disable)
 wandb_project: "llm-350m-pretrain"
 
-# PyTorch 2.0 compile (significant speedup on A10G)
-compile: true
+# torch.compile hangs >1hr on custom RoPE/GQA ops — disabled
+compile: false
 seed: 42
