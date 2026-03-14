@@ -1,0 +1,35 @@
+# Pretraining config — 350M model on FineWeb-Edu 10BT
+# Target hardware: AWS g5.xlarge (A10G 24GB) @ ~$1/hr
+# Estimated training time: ~160-200 hours
+# Estimated cost: ~$160-$200 (well within $1000 budget)
+
+data_dir: data
+
+# Optimizer
+learning_rate: 6.0e-4
+min_lr: 6.0e-5
+warmup_iters: 2000
+lr_decay_iters: 60000
+max_iters: 60000
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+grad_clip: 1.0
+
+# Batch — effective batch size = 4 * 32 * 2048 = 262,144 tokens
+batch_size: 4
+gradient_accumulation_steps: 32
+
+# Logging & checkpointing
+log_interval: 100
+eval_interval: 1000
+eval_iters: 100
+checkpoint_interval: 500   # Critical for spot instance resilience
+checkpoint_dir: checkpoints/pretrain
+
+# W&B logging (set to "" to disable)
+wandb_project: "llm-350m-pretrain"
+
+# PyTorch 2.0 compile (significant speedup on A10G)
+compile: true
+seed: 42

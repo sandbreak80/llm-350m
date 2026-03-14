@@ -1,0 +1,36 @@
+# Data and checkpoints (large files)
+data/
+checkpoints/
+hf_export/
+*.bin
+*.pt
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# W&B
+wandb/
+
+# AWS credentials (never commit!)
+.env
+*.pem
+*.key
+aws_credentials*
+
+# OS
+.DS_Store
+Thumbs.db
