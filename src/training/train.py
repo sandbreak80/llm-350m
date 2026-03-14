@@ -164,8 +164,8 @@ def train(cfg: "TrainConfig"):
     # Data
     train_dataset = PretrainDataset(Path(cfg.data_dir) / "pretrain/train.bin", model_cfg.block_size)
     val_dataset = PretrainDataset(Path(cfg.data_dir) / "pretrain/val.bin", model_cfg.block_size)
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     train_iter = iter(train_loader)
 
     # Resume from checkpoint if available
