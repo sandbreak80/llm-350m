@@ -29,15 +29,19 @@ def prepare_pretrain(output_dir: Path, num_proc: int = 8):
     """Download FineWeb-Edu 10BT sample and tokenize to binary shards."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    cache_dir = os.environ.get("HF_DATASETS_CACHE", "/data/hf_cache/datasets")
+
     print("Loading HuggingFaceFW/fineweb-edu (10BT sample)...")
+    # num_proc=2 for download/Arrow conversion — more causes OOM on 16GB RAM
     ds = load_dataset(
         "HuggingFaceFW/fineweb-edu",
         name="sample-10BT",
         split="train",
-        num_proc=num_proc,
+        num_proc=2,
+        cache_dir=cache_dir,
     )
 
-    # Tokenize in parallel
+    # Tokenize in parallel (CPU-bound, safe to use more workers here)
     def tokenize_batch(examples):
         tokens = [tokenize_text(t) for t in examples["text"]]
         lengths = [len(t) for t in tokens]
@@ -67,12 +71,14 @@ def prepare_finetune(output_dir: Path, pretrain_dir: Path, num_proc: int = 4):
     """Prepare Alpaca instruction data with loss masks."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    cache_dir = os.environ.get("HF_DATASETS_CACHE", "/data/hf_cache/datasets")
+
     print("Loading yahma/alpaca-cleaned...")
-    ds = load_dataset("yahma/alpaca-cleaned", split="train")
+    ds = load_dataset("yahma/alpaca-cleaned", split="train", cache_dir=cache_dir)
 
     # Anti-forgetting: load 2500 samples from pretrain data
     print("Sampling 2500 FineWeb docs for anti-forgetting...")
-    fw = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train[:5000]")
+    fw = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train[:5000]", cache_dir=cache_dir)
     fw_sample = fw.shuffle(seed=42).select(range(2500))
 
     def format_alpaca(example: dict) -> dict:
