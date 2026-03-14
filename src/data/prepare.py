@@ -33,37 +33,22 @@ def tokenize_text(text: str) -> list[int]:
 def prepare_pretrain(output_dir: Path, val_fraction: float = 0.005):
     """Stream FineWeb-Edu 10BT and tokenize directly to binary train/val files.
 
-    Streaming avoids the datasets Arrow conversion multiprocessing that dies
-    on this instance. Slightly slower per-doc but no subprocess crashes.
+    Memory-efficient: writes each document directly to disk as uint16 with no
+    large in-memory buffers. Python list of ints is expensive (28 bytes/int);
+    we convert each doc individually to avoid OOM.
     """
+    import array as arr_mod
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Streaming HuggingFaceFW/fineweb-edu (10BT sample)...")
-    print("This will take ~2-3 hours. Progress updates every 100k docs.")
-
-    # Pre-allocate output files as memory-mapped arrays.
-    # 10BT tokens ~ 20GB at uint16. We write train first, val at the end.
-    # We'll collect val docs separately (small) and write train inline.
     n_val_docs = int(FINEWEB_10BT_DOCS * val_fraction)  # ~48k docs
     n_train_docs = FINEWEB_10BT_DOCS - n_val_docs
-
-    # Two-pass approach: first pass streams and writes everything to a single
-    # temp file, then we split. But that needs 2x space. Instead:
-    # Simpler: reserve last val_fraction of docs for validation.
-    train_tokens: list[int] = []
-    val_tokens: list[int] = []
-    train_written = 0
-    val_written = 0
-
-    # Use chunked writes to avoid holding all tokens in RAM
-    CHUNK = 50_000_000  # flush every 50M tokens (~100MB)
 
     train_file = output_dir / "train.bin"
     val_file = output_dir / "val.bin"
 
-    # Open files for appending as we go
-    train_fp = open(train_file, "wb")
-    val_fp = open(val_file, "wb")
+    print("Streaming HuggingFaceFW/fineweb-edu (10BT sample)...")
+    print("This will take ~2-3 hours.")
 
     ds = load_dataset(
         "HuggingFaceFW/fineweb-edu",
@@ -72,37 +57,27 @@ def prepare_pretrain(output_dir: Path, val_fraction: float = 0.005):
         streaming=True,
     )
 
-    doc_idx = 0
-    for example in tqdm(ds, total=FINEWEB_10BT_DOCS, desc="Tokenizing"):
-        tokens = tokenize_text(example["text"])
+    train_tokens_written = 0
+    val_tokens_written = 0
 
-        if doc_idx < n_train_docs:
-            train_tokens.extend(tokens)
-            if len(train_tokens) >= CHUNK:
-                arr = np.array(train_tokens, dtype=np.uint16)
-                arr.tofile(train_fp)
-                train_written += len(train_tokens)
-                train_tokens = []
-        else:
-            val_tokens.extend(tokens)
+    # Open with large OS buffer — let the OS handle write batching
+    with open(train_file, "wb", buffering=8 * 1024 * 1024) as train_fp, \
+         open(val_file, "wb", buffering=8 * 1024 * 1024) as val_fp:
 
-        doc_idx += 1
+        for doc_idx, example in enumerate(tqdm(ds, total=FINEWEB_10BT_DOCS, desc="Tokenizing")):
+            tokens = tokenize_text(example["text"])
+            # Use array.array('H') — 2 bytes/token, no Python object overhead
+            buf = arr_mod.array('H', tokens)
 
-    # Flush remaining
-    if train_tokens:
-        arr = np.array(train_tokens, dtype=np.uint16)
-        arr.tofile(train_fp)
-        train_written += len(train_tokens)
-    if val_tokens:
-        arr = np.array(val_tokens, dtype=np.uint16)
-        arr.tofile(val_fp)
-        val_written += len(val_tokens)
+            if doc_idx < n_train_docs:
+                buf.tofile(train_fp)
+                train_tokens_written += len(tokens)
+            else:
+                buf.tofile(val_fp)
+                val_tokens_written += len(tokens)
 
-    train_fp.close()
-    val_fp.close()
-
-    print(f"train: {train_written:,} tokens ({train_file.stat().st_size / 1e9:.2f} GB)")
-    print(f"val:   {val_written:,} tokens ({val_file.stat().st_size / 1e9:.2f} GB)")
+    print(f"train: {train_tokens_written:,} tokens ({train_file.stat().st_size / 1e9:.2f} GB)")
+    print(f"val:   {val_tokens_written:,} tokens ({val_file.stat().st_size / 1e9:.2f} GB)")
     print("Pretrain data ready.")
 
 
