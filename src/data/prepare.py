@@ -1,6 +1,9 @@
 """
 Dataset preparation — downloads and tokenizes pretraining + finetuning data.
 
+Uses streaming mode for FineWeb-Edu to avoid the datasets library's
+multiprocessing Arrow conversion (which dies on g5.xlarge).
+
 Usage:
     python src/data/prepare.py --dataset pretrain --output_dir data/pretrain
     python src/data/prepare.py --dataset finetune --output_dir data/finetune
@@ -19,55 +22,91 @@ from tqdm import tqdm
 
 TOKENIZER = tiktoken.get_encoding("gpt2")
 EOT = TOKENIZER.eot_token  # 50256
+# Total docs in FineWeb-Edu 10BT sample
+FINEWEB_10BT_DOCS = 9_672_101
 
 
 def tokenize_text(text: str) -> list[int]:
     return TOKENIZER.encode_ordinary(text) + [EOT]
 
 
-def prepare_pretrain(output_dir: Path, num_proc: int = 8):
-    """Download FineWeb-Edu 10BT sample and tokenize to binary shards."""
+def prepare_pretrain(output_dir: Path, val_fraction: float = 0.005):
+    """Stream FineWeb-Edu 10BT and tokenize directly to binary train/val files.
+
+    Streaming avoids the datasets Arrow conversion multiprocessing that dies
+    on this instance. Slightly slower per-doc but no subprocess crashes.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cache_dir = os.environ.get("HF_DATASETS_CACHE", "/data/hf_cache/datasets")
+    print("Streaming HuggingFaceFW/fineweb-edu (10BT sample)...")
+    print("This will take ~2-3 hours. Progress updates every 100k docs.")
 
-    print("Loading HuggingFaceFW/fineweb-edu (10BT sample)...")
-    # num_proc=2 for download/Arrow conversion — more causes OOM on 16GB RAM
+    # Pre-allocate output files as memory-mapped arrays.
+    # 10BT tokens ~ 20GB at uint16. We write train first, val at the end.
+    # We'll collect val docs separately (small) and write train inline.
+    n_val_docs = int(FINEWEB_10BT_DOCS * val_fraction)  # ~48k docs
+    n_train_docs = FINEWEB_10BT_DOCS - n_val_docs
+
+    # Two-pass approach: first pass streams and writes everything to a single
+    # temp file, then we split. But that needs 2x space. Instead:
+    # Simpler: reserve last val_fraction of docs for validation.
+    train_tokens: list[int] = []
+    val_tokens: list[int] = []
+    train_written = 0
+    val_written = 0
+
+    # Use chunked writes to avoid holding all tokens in RAM
+    CHUNK = 50_000_000  # flush every 50M tokens (~100MB)
+
+    train_file = output_dir / "train.bin"
+    val_file = output_dir / "val.bin"
+
+    # Open files for appending as we go
+    train_fp = open(train_file, "wb")
+    val_fp = open(val_file, "wb")
+
     ds = load_dataset(
         "HuggingFaceFW/fineweb-edu",
         name="sample-10BT",
         split="train",
-        num_proc=2,
-        cache_dir=cache_dir,
+        streaming=True,
     )
 
-    # Tokenize in parallel (CPU-bound, safe to use more workers here)
-    def tokenize_batch(examples):
-        tokens = [tokenize_text(t) for t in examples["text"]]
-        lengths = [len(t) for t in tokens]
-        return {"tokens": tokens, "length": lengths}
+    doc_idx = 0
+    for example in tqdm(ds, total=FINEWEB_10BT_DOCS, desc="Tokenizing"):
+        tokens = tokenize_text(example["text"])
 
-    ds = ds.map(tokenize_batch, batched=True, num_proc=num_proc, remove_columns=ds.column_names)
+        if doc_idx < n_train_docs:
+            train_tokens.extend(tokens)
+            if len(train_tokens) >= CHUNK:
+                arr = np.array(train_tokens, dtype=np.uint16)
+                arr.tofile(train_fp)
+                train_written += len(train_tokens)
+                train_tokens = []
+        else:
+            val_tokens.extend(tokens)
 
-    # Split train/val
-    ds = ds.train_test_split(test_size=0.005, seed=42)
+        doc_idx += 1
 
-    for split, dataset in ds.items():
-        total_tokens = sum(dataset["length"])
-        print(f"{split}: {total_tokens:,} tokens across {len(dataset):,} documents")
+    # Flush remaining
+    if train_tokens:
+        arr = np.array(train_tokens, dtype=np.uint16)
+        arr.tofile(train_fp)
+        train_written += len(train_tokens)
+    if val_tokens:
+        arr = np.array(val_tokens, dtype=np.uint16)
+        arr.tofile(val_fp)
+        val_written += len(val_tokens)
 
-        # Write to flat uint16 binary file (matches nanoGPT approach)
-        filename = output_dir / f"{split}.bin"
-        arr = np.memmap(filename, dtype=np.uint16, mode="w+", shape=(total_tokens,))
-        idx = 0
-        for tokens in tqdm(dataset["tokens"], desc=f"Writing {split}"):
-            arr[idx : idx + len(tokens)] = tokens
-            idx += len(tokens)
-        arr.flush()
-        print(f"Saved {filename} ({filename.stat().st_size / 1e9:.2f} GB)")
+    train_fp.close()
+    val_fp.close()
+
+    print(f"train: {train_written:,} tokens ({train_file.stat().st_size / 1e9:.2f} GB)")
+    print(f"val:   {val_written:,} tokens ({val_file.stat().st_size / 1e9:.2f} GB)")
+    print("Pretrain data ready.")
 
 
-def prepare_finetune(output_dir: Path, pretrain_dir: Path, num_proc: int = 4):
+def prepare_finetune(output_dir: Path, num_proc: int = 4):
     """Prepare Alpaca instruction data with loss masks."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,62 +115,69 @@ def prepare_finetune(output_dir: Path, pretrain_dir: Path, num_proc: int = 4):
     print("Loading yahma/alpaca-cleaned...")
     ds = load_dataset("yahma/alpaca-cleaned", split="train", cache_dir=cache_dir)
 
-    # Anti-forgetting: load 2500 samples from pretrain data
+    # Anti-forgetting: stream 2500 samples from FineWeb (no Arrow conversion)
     print("Sampling 2500 FineWeb docs for anti-forgetting...")
-    fw = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train[:5000]", cache_dir=cache_dir)
-    fw_sample = fw.shuffle(seed=42).select(range(2500))
+    fw_stream = load_dataset(
+        "HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True
+    )
+    fw_samples = []
+    for i, ex in enumerate(fw_stream):
+        if i >= 5000:
+            break
+        fw_samples.append(ex)
+    import random; random.seed(42); random.shuffle(fw_samples)
+    fw_samples = fw_samples[:2500]
 
     def format_alpaca(example: dict) -> dict:
         if example.get("input", "").strip():
             prompt = f"### Instruction:\n{example['instruction']}\n\n### Input:\n{example['input']}\n\n### Response:\n"
         else:
             prompt = f"### Instruction:\n{example['instruction']}\n\n### Response:\n"
-        response = example["output"]
-        return {"prompt": prompt, "response": response}
+        return {"prompt": prompt, "response": example["output"]}
 
     def tokenize_instruction(example: dict) -> dict:
         prompt_tokens = TOKENIZER.encode_ordinary(example["prompt"])
         response_tokens = TOKENIZER.encode_ordinary(example["response"]) + [EOT]
         tokens = prompt_tokens + response_tokens
-        # loss_mask: 0 for prompt (ignored), 1 for response (trained)
         mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
-        return {"tokens": tokens, "loss_mask": mask, "length": len(tokens)}
+        return {"tokens": tokens, "loss_mask": mask}
 
-    def tokenize_pretrain_doc(example: dict) -> dict:
-        tokens = tokenize_text(example["text"])
-        mask = [1] * len(tokens)  # train on everything
-        return {"tokens": tokens, "loss_mask": mask, "length": len(tokens)}
+    # Process instruction data (small dataset, single-process fine)
+    ds_fmt = ds.map(format_alpaca)
+    ds_tok = ds_fmt.map(tokenize_instruction, num_proc=num_proc, remove_columns=ds_fmt.column_names)
 
-    # Process instruction data
-    ds_formatted = ds.map(format_alpaca)
-    ds_tokenized = ds_formatted.map(tokenize_instruction, num_proc=num_proc, remove_columns=ds_formatted.column_names)
+    # Tokenize anti-forgetting samples inline
+    fw_tok = [{"tokens": tokenize_text(ex["text"]), "loss_mask": None} for ex in tqdm(fw_samples, desc="Tokenizing FineWeb")]
+    for ex in fw_tok:
+        ex["loss_mask"] = [1] * len(ex["tokens"])
 
-    # Process anti-forgetting data
-    fw_tokenized = fw_sample.map(tokenize_pretrain_doc, num_proc=num_proc, remove_columns=fw_sample.column_names)
+    # Combine and shuffle
+    all_examples = list(ds_tok) + fw_tok
+    random.seed(42)
+    random.shuffle(all_examples)
 
-    # Combine
-    from datasets import concatenate_datasets
-    combined = concatenate_datasets([ds_tokenized, fw_tokenized]).shuffle(seed=42)
-    combined = combined.train_test_split(test_size=0.02, seed=42)
+    # Split train/val
+    n_val = max(1, int(len(all_examples) * 0.02))
+    val_examples = all_examples[:n_val]
+    train_examples = all_examples[n_val:]
 
-    # Save as JSONL (variable length — can't easily use memmap for finetuning)
-    for split, dataset in combined.items():
+    for split, examples in [("train", train_examples), ("val", val_examples)]:
         filename = output_dir / f"{split}.jsonl"
         with open(filename, "w") as f:
-            for example in tqdm(dataset, desc=f"Writing {split}"):
-                f.write(json.dumps({"tokens": example["tokens"], "loss_mask": example["loss_mask"]}) + "\n")
-        print(f"Saved {filename} ({len(dataset):,} examples)")
+            for ex in tqdm(examples, desc=f"Writing {split}"):
+                f.write(json.dumps({"tokens": ex["tokens"], "loss_mask": ex["loss_mask"]}) + "\n")
+        print(f"Saved {filename} ({len(examples):,} examples)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", choices=["pretrain", "finetune", "all"], default="all")
     parser.add_argument("--output_dir", type=Path, default=Path("data"))
-    parser.add_argument("--num_proc", type=int, default=8)
+    parser.add_argument("--num_proc", type=int, default=4)
     args = parser.parse_args()
 
     if args.dataset in ("pretrain", "all"):
-        prepare_pretrain(args.output_dir / "pretrain", num_proc=args.num_proc)
+        prepare_pretrain(args.output_dir / "pretrain")
 
     if args.dataset in ("finetune", "all"):
-        prepare_finetune(args.output_dir / "finetune", args.output_dir / "pretrain", num_proc=args.num_proc)
+        prepare_finetune(args.output_dir / "finetune", num_proc=args.num_proc)
