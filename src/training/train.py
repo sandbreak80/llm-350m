@@ -13,6 +13,7 @@ Supports:
 
 import math
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Optional
@@ -130,6 +131,19 @@ def estimate_loss(model, val_loader, eval_iters: int, device: torch.device) -> f
 
 # ── Main training loop ───────────────────────────────────────────────────────
 
+# ── Spot interruption handler ─────────────────────────────────────────────────
+# AWS sends SIGTERM ~2 min before reclaiming a spot instance.
+# We set a flag here (safe from signal context) and check it each iteration.
+_shutdown_requested = False
+
+def _sigterm_handler(signum, frame):
+    global _shutdown_requested
+    _shutdown_requested = True
+    print("\nSIGTERM received — spot interruption imminent. Will checkpoint at end of iteration.", flush=True)
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
 def train(cfg: "TrainConfig"):
     use_ddp = is_ddp()
     rank = setup_ddp() if use_ddp else 0
@@ -225,6 +239,7 @@ def train(cfg: "TrainConfig"):
             t0 = time.time()
 
         # Evaluation + checkpoint
+        saved_this_iter = False
         if is_master and iteration % cfg.eval_interval == 0:
             val_loss = estimate_loss(model, val_loader, cfg.eval_iters, device)
             print(f"  val_loss: {val_loss:.4f}")
@@ -233,10 +248,20 @@ def train(cfg: "TrainConfig"):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 save_checkpoint(model, optimizer, iteration, val_loss, cfg, iteration)
+                saved_this_iter = True
 
-        # Periodic checkpoint (for spot instance resilience)
-        if is_master and iteration % cfg.checkpoint_interval == 0 and iteration > start_iter:
-            save_checkpoint(model, optimizer, iteration, float("inf"), cfg, iteration)
+        # Periodic checkpoint (for spot instance resilience) — skip if eval already saved
+        if is_master and iteration % cfg.checkpoint_interval == 0 and iteration > start_iter and not saved_this_iter:
+            save_checkpoint(model, optimizer, iteration, best_val_loss, cfg, iteration)
+
+        # Spot interruption: SIGTERM received — save and exit cleanly
+        if _shutdown_requested:
+            if is_master:
+                print("Saving emergency checkpoint before shutdown...", flush=True)
+                save_checkpoint(model, optimizer, iteration, best_val_loss, cfg, iteration)
+                if cfg.wandb_project:
+                    wandb.finish()
+            break
 
     if use_ddp:
         destroy_ddp()

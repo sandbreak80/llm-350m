@@ -39,22 +39,44 @@ cd /home/ec2-user/llm-project
 "$PIP" install -e . --quiet
 
 # ── Storage setup ────────────────────────────────────────────────────────────
-# Create data and checkpoint directories
 mkdir -p data/pretrain data/finetune checkpoints/pretrain checkpoints/finetune
+
+# Pull checkpoints from S3 (resumes from latest if available)
+echo "Pulling checkpoints from S3..."
+aws s3 sync s3://${S3_BUCKET}/checkpoints/ checkpoints/ --quiet
+echo "Checkpoints pulled: $(ls checkpoints/pretrain/*.pt 2>/dev/null | wc -l) files"
+
+# Pull training data from S3 (avoids re-tokenizing 10BT on every restart)
+echo "Pulling training data from S3..."
+aws s3 sync s3://${S3_BUCKET}/data/ data/ --quiet
+if [ -f data/pretrain/train.bin ]; then
+    echo "Training data ready: $(du -sh data/pretrain/train.bin | cut -f1) train.bin"
+else
+    echo "No data in S3 yet — running prepare.py (this takes ~2 hours)..."
+    export HF_HOME=/home/ec2-user/hf_cache
+    export HF_DATASETS_CACHE=/home/ec2-user/hf_cache/datasets
+    "$PYTHON" src/data/prepare.py --dataset all
+    # Upload data to S3 for future restarts
+    aws s3 sync data/ s3://${S3_BUCKET}/data/ --quiet
+    echo "Training data uploaded to S3 for future restarts."
+fi
 
 # Set up S3 checkpoint sync cron (every 5 minutes)
 (crontab -l 2>/dev/null; echo "*/5 * * * * aws s3 sync $(pwd)/checkpoints s3://${S3_BUCKET}/checkpoints/ --quiet") | crontab -
 echo "Checkpoint sync cron installed → s3://${S3_BUCKET}/checkpoints/"
 
+# ── Auto-start training ───────────────────────────────────────────────────────
 echo ""
-echo "=== Setup complete ==="
+echo "Starting training in tmux session 'train'..."
+tmux new-session -d -s train
+tmux send-keys -t train \
+    "export PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
+     cd /home/ec2-user/llm-project && \
+     $PYTHON -u src/training/train.py --config configs/pretrain_350m.yaml 2>&1 | tee /tmp/train.log" \
+    Enter
+
 echo ""
-echo "Next steps:"
-echo "  1. Configure W&B: wandb login"
-echo "  2. Configure HuggingFace: huggingface-cli login"
-echo "  3. Prepare data: /opt/pytorch/bin/python src/data/prepare.py --dataset all"
-echo "  4. Start pretraining in tmux: tmux new -s train"
-echo "     /opt/pytorch/bin/python src/training/train.py --config configs/pretrain_350m.yaml"
-echo ""
-echo "  Monitor GPU: nvtop"
-echo "  Check costs: aws ce get-cost-and-usage ..."
+echo "=== Setup complete — training started ==="
+echo "  Attach to training: tmux attach -t train"
+echo "  Watch log:          tail -f /tmp/train.log"
+echo "  Monitor GPU:        watch -n5 nvidia-smi"
