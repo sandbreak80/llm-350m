@@ -29,9 +29,24 @@ PYTHON="/opt/pytorch/bin/python"
 # Note: flash-attn package not needed — we use F.scaled_dot_product_attention
 # (PyTorch 2.0+ uses Flash Attention 2 kernels natively via SDPA)
 
-# ── Project setup ────────────────────────────────────────────────────────────
+# ── Credentials from SSM ─────────────────────────────────────────────────────
+REGION="us-east-1"
 S3_BUCKET="bstoner-llm-checkpoints-536277006919"
 
+WANDB_KEY=$(aws ssm get-parameter --name "llm-training-wandb-key" --with-decryption --query Parameter.Value --output text --region $REGION 2>/dev/null || echo "")
+HF_TOKEN=$(aws ssm get-parameter --name "llm-training-hf-token" --with-decryption --query Parameter.Value --output text --region $REGION 2>/dev/null || echo "")
+
+if [ -n "$WANDB_KEY" ]; then
+    /opt/pytorch/bin/wandb login "$WANDB_KEY" --relogin
+    echo "W&B authenticated."
+fi
+if [ -n "$HF_TOKEN" ]; then
+    export HF_TOKEN="$HF_TOKEN"
+    /opt/pytorch/bin/huggingface-cli login --token "$HF_TOKEN"
+    echo "HuggingFace authenticated."
+fi
+
+# ── Project setup ────────────────────────────────────────────────────────────
 # Repo already cloned by user-data — just install it
 cd /home/ec2-user/llm-project
 
