@@ -42,8 +42,7 @@ if [ -n "$WANDB_KEY" ]; then
 fi
 if [ -n "$HF_TOKEN" ]; then
     export HF_TOKEN="$HF_TOKEN"
-    /opt/pytorch/bin/hf login --token "$HF_TOKEN"
-    echo "HuggingFace authenticated."
+    /opt/pytorch/bin/python -c "from huggingface_hub import login; login(token='$HF_TOKEN')" 2>/dev/null && echo "HuggingFace authenticated." || echo "HuggingFace login skipped (not required for checkpoint resume)."
 fi
 
 # ── Project setup ────────────────────────────────────────────────────────────
