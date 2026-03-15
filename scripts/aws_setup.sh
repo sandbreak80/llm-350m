@@ -42,7 +42,7 @@ if [ -n "$WANDB_KEY" ]; then
 fi
 if [ -n "$HF_TOKEN" ]; then
     export HF_TOKEN="$HF_TOKEN"
-    /opt/pytorch/bin/huggingface-cli login --token "$HF_TOKEN"
+    /opt/pytorch/bin/hf login --token "$HF_TOKEN"
     echo "HuggingFace authenticated."
 fi
 
