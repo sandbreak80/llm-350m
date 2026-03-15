@@ -53,7 +53,23 @@ cd /home/ec2-user/llm-project
 "$PIP" install -e . --quiet
 
 # ── Storage setup ────────────────────────────────────────────────────────────
-mkdir -p data/pretrain data/finetune checkpoints/pretrain checkpoints/finetune
+# Mount the 150GB EBS data volume (nvme1n1) at /data if not already mounted
+if ! mountpoint -q /data; then
+    sudo mkdir -p /data
+    # Format only if the device has no filesystem yet
+    if ! sudo blkid /dev/nvme1n1 | grep -q ext4; then
+        sudo mkfs -t ext4 /dev/nvme1n1
+    fi
+    sudo mount /dev/nvme1n1 /data
+    sudo chown ec2-user:ec2-user /data
+fi
+mkdir -p /data/checkpoints/pretrain /data/checkpoints/finetune
+mkdir -p /data/training_data/pretrain /data/training_data/finetune
+mkdir -p /data/hf_cache/datasets
+# Symlink project dirs to /data so large files go to the 150GB volume
+rm -rf checkpoints data
+ln -s /data/checkpoints checkpoints
+ln -s /data/training_data data
 
 # Pull checkpoints from S3 (resumes from latest if available)
 echo "Pulling checkpoints from S3..."
@@ -81,11 +97,15 @@ echo "Checkpoint sync cron installed → s3://${S3_BUCKET}/checkpoints/"
 
 # ── Auto-start training ───────────────────────────────────────────────────────
 echo ""
-echo "Starting training in tmux session 'train'..."
+echo "Starting pipeline in tmux session 'train'..."
 tmux new-session -d -s train
 tmux send-keys -t train \
-    "export PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \
+    "export PYTHONUNBUFFERED=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+     HF_HOME=/data/hf_cache HF_DATASETS_CACHE=/data/hf_cache/datasets \
+     HF_TOKEN=${HF_TOKEN:-} && \
      cd /home/ec2-user/llm-project && \
+     $PYTHON src/data/prepare.py --dataset all 2>&1 | tee /tmp/prepare.log && \
+     aws s3 sync /data/training_data s3://${S3_BUCKET}/data/ --quiet && \
      $PYTHON -u src/training/train.py --config configs/pretrain_350m.yaml 2>&1 | tee /tmp/train.log" \
     Enter
 
