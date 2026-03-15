@@ -14,9 +14,9 @@ beta2: 0.95
 weight_decay: 0.1
 grad_clip: 1.0
 
-# Batch — effective batch size = 2 * 64 * 2048 = 262,144 tokens (same, less VRAM per step)
-batch_size: 2
-gradient_accumulation_steps: 64
+# Batch — effective batch size = 4 * 32 * 2048 = 262,144 tokens
+batch_size: 4
+gradient_accumulation_steps: 32
 
 # Logging & checkpointing
 log_interval: 100
