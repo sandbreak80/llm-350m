@@ -8,7 +8,8 @@ set -euo pipefail
 echo "=== LLM Training Environment Setup ==="
 
 # ── System packages (Amazon Linux 2023) ──────────────────────────────────────
-sudo dnf install -y git tmux htop
+sudo dnf install -y git tmux htop cronie
+sudo systemctl enable --now crond
 
 # ── Python environment — DLAMI uses /opt/pytorch (Python 3.12, PyTorch 2.7) ──
 PIP="/opt/pytorch/bin/pip"
