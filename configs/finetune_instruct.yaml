@@ -1,15 +1,15 @@
-# Instruction finetuning config — Alpaca-cleaned + anti-forgetting FineWeb
-# Resume from best pretrain checkpoint
+# Instruction finetuning config — OpenHermes-2.5 (v2) + anti-forgetting FineWeb
+# Resume from pretrain checkpoint (not v1 SFT — avoids stacking artifacts)
 
 pretrain_checkpoint: checkpoints/pretrain/latest.pt
-data_dir: data/finetune
+data_dir: data/finetune_v2
 output_dir: checkpoints/finetune
 
-# Lower LR for SFT (standard practice)
-learning_rate: 2.0e-5
-min_lr: 3.0e-6
-warmup_iters: 0
-max_iters: 1500
+# Lower LR for higher-quality data; warmup for longer run
+learning_rate: 1.0e-5
+min_lr: 1.5e-6
+warmup_iters: 100
+max_iters: 4000
 beta1: 0.9
 beta2: 0.95
 weight_decay: 0.01
@@ -19,14 +19,14 @@ grad_clip: 1.0
 batch_size: 4
 gradient_accumulation_steps: 32
 
-# Enable dropout during finetuning
-dropout: 0.1
+# Light dropout — less regularization needed with better data
+dropout: 0.05
 
 # Logging
 log_interval: 50
 eval_interval: 200
 eval_iters: 50
 
-wandb_project: "llm-350m-finetune"
-compile: true
+wandb_project: "llm-350m-finetune-v2"
+compile: false  # torch.compile hangs on custom RoPE/GQA ops (same as pretrain)
 seed: 42

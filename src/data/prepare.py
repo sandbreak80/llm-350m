@@ -144,9 +144,116 @@ def prepare_finetune(output_dir: Path, num_proc: int = 4):
         print(f"Saved {filename} ({len(examples):,} examples)")
 
 
+def prepare_finetune_v2(output_dir: Path, num_proc: int = 4):
+    """Prepare OpenHermes-2.5 with ChatML format and loss masks.
+
+    ChatML format:
+        <|im_start|>system
+        You are a helpful assistant.<|im_end|>
+        <|im_start|>user
+        {user turn}<|im_end|>
+        <|im_start|>assistant
+        {assistant turn}<|im_end|>
+
+    Loss mask = 1 only on assistant turns (including the <|im_end|> closing token).
+    """
+    import random
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_dir = os.environ.get("HF_DATASETS_CACHE", "/data/hf_cache/datasets")
+
+    print("Loading teknium/OpenHermes-2.5...")
+    ds = load_dataset("teknium/OpenHermes-2.5", split="train", cache_dir=cache_dir)
+    print(f"Loaded {len(ds):,} examples")
+
+    # Anti-forgetting: stream 10K samples from FineWeb
+    print("Sampling 10K FineWeb docs for anti-forgetting...")
+    fw_stream = load_dataset(
+        "HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True
+    )
+    fw_samples = []
+    for i, ex in enumerate(fw_stream):
+        if i >= 20000:
+            break
+        fw_samples.append(ex)
+    random.seed(42)
+    random.shuffle(fw_samples)
+    fw_samples = fw_samples[:10000]
+
+    def tokenize_chatml(example: dict) -> dict | None:
+        conversations = example.get("conversations", [])
+        if not conversations:
+            return None
+
+        tokens = []
+        loss_mask = []
+
+        for turn in conversations:
+            role = turn.get("from", "")
+            value = turn.get("value", "")
+
+            if role == "system":
+                role_str = "system"
+            elif role == "human":
+                role_str = "user"
+            elif role == "gpt":
+                role_str = "assistant"
+            else:
+                continue  # skip unknown roles
+
+            header_tokens = TOKENIZER.encode_ordinary(f"<|im_start|>{role_str}\n")
+            content_tokens = TOKENIZER.encode_ordinary(value)
+            footer_tokens = TOKENIZER.encode_ordinary("<|im_end|>\n")
+
+            turn_tokens = header_tokens + content_tokens + footer_tokens
+            is_assistant = role_str == "assistant"
+            turn_mask = [1 if is_assistant else 0] * len(turn_tokens)
+
+            tokens.extend(turn_tokens)
+            loss_mask.extend(turn_mask)
+
+        # Must have at least one assistant token to be useful
+        if sum(loss_mask) == 0:
+            return None
+
+        tokens = tokens + [EOT]
+        loss_mask = loss_mask + [1]
+        return {"tokens": tokens, "loss_mask": loss_mask}
+
+    print("Tokenizing OpenHermes-2.5...")
+    instruction_examples = []
+    skipped = 0
+    for ex in tqdm(ds, desc="Tokenizing"):
+        result = tokenize_chatml(ex)
+        if result is None:
+            skipped += 1
+            continue
+        instruction_examples.append(result)
+    print(f"Tokenized {len(instruction_examples):,} examples ({skipped} skipped)")
+
+    fw_tok = [{"tokens": tokenize_text(ex["text"]), "loss_mask": None} for ex in tqdm(fw_samples, desc="Tokenizing FineWeb")]
+    for ex in fw_tok:
+        ex["loss_mask"] = [1] * len(ex["tokens"])
+
+    all_examples = instruction_examples + fw_tok
+    random.seed(42)
+    random.shuffle(all_examples)
+
+    n_val = max(1, int(len(all_examples) * 0.02))
+    val_examples = all_examples[:n_val]
+    train_examples = all_examples[n_val:]
+
+    for split, examples in [("train", train_examples), ("val", val_examples)]:
+        filename = output_dir / f"{split}.jsonl"
+        with open(filename, "w") as f:
+            for ex in tqdm(examples, desc=f"Writing {split}"):
+                f.write(json.dumps({"tokens": ex["tokens"], "loss_mask": ex["loss_mask"]}) + "\n")
+        print(f"Saved {filename} ({len(examples):,} examples)")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["pretrain", "finetune", "all"], default="all")
+    parser.add_argument("--dataset", choices=["pretrain", "finetune", "finetune_v2", "all"], default="all")
     parser.add_argument("--output_dir", type=Path, default=Path("data"))
     parser.add_argument("--num_proc", type=int, default=4)
     args = parser.parse_args()
@@ -156,3 +263,6 @@ if __name__ == "__main__":
 
     if args.dataset in ("finetune", "all"):
         prepare_finetune(args.output_dir / "finetune", num_proc=args.num_proc)
+
+    if args.dataset == "finetune_v2":
+        prepare_finetune_v2(args.output_dir / "finetune_v2", num_proc=args.num_proc)
