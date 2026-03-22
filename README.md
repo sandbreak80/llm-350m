@@ -501,3 +501,11 @@ This model is intended for:
   note   = {Training code: https://github.com/sandbreak80/llm-350m}
 }
 ```
+
+---
+
+## V2 Model
+
+V2 is published separately at [`sandbreak80sd/llm-350m-instruct-v2`](https://huggingface.co/sandbreak80sd/llm-350m-instruct-v2).
+
+Key changes: OpenHermes-2.5 (200K GPT-4) instead of Alpaca-cleaned (52K GPT-3.5), ChatML format, lower LR (1e-5), 4000 training iterations.
