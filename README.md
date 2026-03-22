@@ -508,4 +508,62 @@ This model is intended for:
 
 V2 is published separately at [`sandbreak80sd/llm-350m-instruct-v2`](https://huggingface.co/sandbreak80sd/llm-350m-instruct-v2).
 
-Key changes: OpenHermes-2.5 (200K GPT-4) instead of Alpaca-cleaned (52K GPT-3.5), ChatML format, lower LR (1e-5), 4000 training iterations.
+### V1 vs V2 Comparison
+
+| | V1 | V2 |
+|---|---|---|
+| HuggingFace | [llm-350m-instruct](https://huggingface.co/sandbreak80sd/llm-350m-instruct) | [llm-350m-instruct-v2](https://huggingface.co/sandbreak80sd/llm-350m-instruct-v2) |
+| Finetune data | yahma/alpaca-cleaned (52K, GPT-3.5) | teknium/OpenHermes-2.5 (200K, GPT-4) |
+| Prompt format | Alpaca (`### Instruction:`) | ChatML (`<\|im_start\|>`) |
+| Anti-forgetting blend | 2,500 FineWeb samples | 10,000 FineWeb samples |
+| Learning rate | 2e-5 | 1e-5 |
+| Finetune iters | 1,500 | 4,000 (best @ 3,800) |
+| Val loss | 1.7189 | **1.3704 (-20.3%)** |
+
+### V1 vs V2 Benchmarks
+
+| Benchmark | V1 | V2 | Δ |
+|---|---|---|---|
+| HellaSwag | 38.40% | 37.60% | -0.80% |
+| LAMBADA | 34.00% | 35.30% | +1.30% |
+| ARC-Easy | 58.20% | 58.40% | +0.20% |
+| ARC-Challenge | 27.76% | 25.42% | -2.34% |
+| WinoGrande | 52.80% | 52.40% | -0.40% |
+
+Benchmark deltas are small and mixed — expected at 350M scale, and sensitive to the prompt format change (Alpaca → ChatML affects loglikelihood scoring). Val loss improvement of 20.3% is the more reliable signal and reflects meaningfully better instruction-following quality.
+
+### Key Takeaway
+
+The data quality and format upgrade (52K GPT-3.5 Alpaca → 200K GPT-4 ChatML) was the single biggest lever available with the same pretrained base, same architecture, and same compute budget. The architecture was not the bottleneck.
+
+---
+
+## Lessons Learned
+
+Documented for reference and for the next project.
+
+### What Worked
+
+- **ChatML > Alpaca** for SFT quality — cleaner format, better generalization, aligns with modern inference tooling
+- **GPT-4 generated data** is substantially better than GPT-3.5 at the same token count
+- **Anti-forgetting blend** during SFT is essential — mix ~5-10% pretraining data to prevent catastrophic forgetting
+- **Loss masking on assistant turns only** — do not train on prompt tokens; this is what separates SFT from continued pretraining
+- **Over-training past Chinchilla-optimal** — correct for a model you'll serve at inference time; fewer tokens/sec means more quality per parameter matters
+- **Spot-resilient infrastructure** — SIGTERM handler + checkpoint every 500 iters + S3 sync via cron; the run survived multiple interruptions with no data loss
+- **Non-blocking CPU eval pipeline** — run benchmarks on CPU via cron while GPU trains full-time
+- **LLaMA-style architecture is robust** — RoPE, RMSNorm, SwiGLU, GQA all worked cleanly at 350M with no instability
+
+### Known Gotchas
+
+- **`torch.load(..., weights_only=False)`** required for PyTorch 2.6+ — the default changed and silently breaks checkpoint loading
+- **Tied embeddings + safetensors**: omit `lm_head.weight` from the weight mapping and set `tie_word_embeddings=True` in config — HF reconstructs it; including it raises `RuntimeError` about shared memory
+- **Root EBS fills fast** — NVIDIA drivers (17GB) + PyTorch (8.6GB) leave ~4GB on a 30GB root volume; put all large outputs on the data volume from day one
+- **HF tokens**: always use a simple "write" role token; fine-grained tokens are easy to misconfigure; verify with `whoami()` before any pipeline run
+- **llama.cpp `convert_hf_to_gguf.py`** needs the same Python environment that has `transformers` installed — not system `python3`
+- **`torch.compile` disabled for pretraining** — hangs on custom RoPE/GQA ops; works fine for finetuning
+
+---
+
+## Project Retrospective
+
+Full retrospective with detailed notes on architecture decisions, training infrastructure, cost breakdown, and recommendations for the next project: [RETROSPECTIVE.md](RETROSPECTIVE.md)

@@ -56,7 +56,7 @@ def remap_weights(state_dict: dict, model_cfg: ModelConfig) -> dict:
     mapping = {}
     mapping["model.embed_tokens.weight"] = state_dict["token_emb.weight"]
     mapping["model.norm.weight"] = state_dict["norm.weight"]
-    mapping["lm_head.weight"] = state_dict["token_emb.weight"]  # tied
+    # lm_head.weight omitted — tie_word_embeddings=True, HF reconstructs it automatically
 
     for i in range(model_cfg.n_layers):
         prefix = f"layers.{i}"
@@ -78,7 +78,7 @@ def remap_weights(state_dict: dict, model_cfg: ModelConfig) -> dict:
 
 
 def export(checkpoint_path: str, output_dir: str, repo_id: str, push: bool):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     model_cfg: ModelConfig = checkpoint["model_config"]
 
     print(f"Loaded checkpoint: val_loss={checkpoint.get('val_loss', 'N/A')}, iter={checkpoint.get('iter', 'N/A')}")
