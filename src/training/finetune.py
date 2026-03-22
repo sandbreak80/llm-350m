@@ -102,7 +102,7 @@ def finetune(cfg: FinetuneConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load pretrained model
-    checkpoint = torch.load(cfg.pretrain_checkpoint, map_location="cpu")
+    checkpoint = torch.load(cfg.pretrain_checkpoint, map_location="cpu", weights_only=False)
     model_cfg: ModelConfig = checkpoint["model_config"]
     model_cfg.dropout = cfg.dropout  # Enable dropout for finetuning
 
