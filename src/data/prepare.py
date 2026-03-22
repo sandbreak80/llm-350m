@@ -144,8 +144,11 @@ def prepare_finetune(output_dir: Path, num_proc: int = 4):
         print(f"Saved {filename} ({len(examples):,} examples)")
 
 
-def prepare_finetune_v2(output_dir: Path, num_proc: int = 4):
+def prepare_finetune_v2(output_dir: Path, num_proc: int = 4, max_instruction_examples: int = 200_000):
     """Prepare OpenHermes-2.5 with ChatML format and loss masks.
+
+    OpenHermes-2.5 has ~1M examples; we cap at 200K random examples to keep
+    RAM usage safe (~1.5GB) and give ~2.5 epochs over 4000 training iterations.
 
     ChatML format:
         <|im_start|>system
@@ -164,7 +167,13 @@ def prepare_finetune_v2(output_dir: Path, num_proc: int = 4):
 
     print("Loading teknium/OpenHermes-2.5...")
     ds = load_dataset("teknium/OpenHermes-2.5", split="train", cache_dir=cache_dir)
-    print(f"Loaded {len(ds):,} examples")
+    print(f"Loaded {len(ds):,} examples — sampling {max_instruction_examples:,}")
+    # Random subsample to cap RAM usage and hit ~2.5 epochs at 4000 iters
+    indices = list(range(len(ds)))
+    random.seed(42)
+    random.shuffle(indices)
+    ds = ds.select(indices[:max_instruction_examples])
+    print(f"Subsampled to {len(ds):,} examples")
 
     # Anti-forgetting: stream 10K samples from FineWeb
     print("Sampling 10K FineWeb docs for anti-forgetting...")
