@@ -51,9 +51,21 @@ You'll need accounts for four services (all free tiers work):
 - **AWS** — for the GPU instance and S3 checkpoint storage
 - **HuggingFace** — to publish the final model ([huggingface.co](https://huggingface.co))
 - **Weights & Biases** — for training monitoring ([wandb.ai](https://wandb.ai))
-- **GitHub** — to store your code
+- **GitHub** — to store your code (fork this repo first)
 
 You'll also need the AWS CLI installed and configured locally (`aws configure`).
+
+### Configure Your Environment
+
+All personal values (AWS IDs, usernames, bucket names) live in one file that is never committed:
+
+```bash
+cp config.env.example config.env
+# Edit config.env and fill in your values
+source config.env
+```
+
+`config.env` is in `.gitignore` — it will never accidentally be committed. Every script reads from these environment variables, so there is nothing else to edit.
 
 ### Estimated Cost
 
@@ -184,17 +196,19 @@ python convert_hf_to_gguf.py ../hf_export --outfile model-f16.gguf --outtype f16
 
 ### Script Reference
 
-| Script | What it does |
-|---|---|
-| `scripts/aws_setup.sh` | Bootstrap a fresh instance — installs deps, mounts EBS, authenticates services, starts S3 sync cron |
-| `scripts/launch_spot.sh` | Launch a spot instance (cheaper than on-demand, uses the same setup) |
-| `src/data/prepare.py` | Download and tokenize pretraining + finetuning datasets |
-| `src/training/train.py` | Pretraining loop — spot-resilient, auto-resumes, W&B logging |
-| `src/training/finetune.py` | SFT loop — loss masking on assistant turns, anti-forgetting blend |
-| `src/eval/run_eval.py` | Run HellaSwag, LAMBADA, ARC, WinoGrande benchmarks |
-| `scripts/eval_watcher.sh` | Cron script — fires evals automatically at checkpoint intervals |
-| `scripts/export_to_hf.py` | Remap weights to LlamaForCausalLM format and push to HuggingFace |
-| `scripts/generate.py` | Interactive inference and sample generation from a checkpoint |
+| Script | Step | What it does |
+|---|---|---|
+| `config.env.example` | 0 | Template config — copy to `config.env`, fill in your values, `source config.env` |
+| `scripts/launch_spot.sh` | 1a | Launch a spot instance (optional — ~60% cheaper than on-demand for pretraining) |
+| `scripts/aws_setup.sh` | 1b | Bootstrap the instance — installs deps, mounts EBS, authenticates W&B + HF, starts S3 sync cron |
+| `src/data/prepare.py` | 2 | Download and tokenize pretraining + finetuning datasets |
+| `src/training/train.py` | 3 | Pretraining loop — spot-resilient, auto-resumes from latest checkpoint, W&B logging |
+| `scripts/eval_watcher.sh` | 3b | Cron script — fires benchmark evals on CPU automatically at checkpoint intervals during training |
+| `src/eval/run_eval.py` | 3c | Run HellaSwag, LAMBADA, ARC, WinoGrande benchmarks manually |
+| `src/training/finetune.py` | 4 | SFT loop — loss masking on assistant turns only, anti-forgetting blend |
+| `scripts/export_to_hf.py` | 5 | Remap weights to LlamaForCausalLM format, save as safetensors, push to HuggingFace |
+| `scripts/generate.py` | 5b | Interactive inference and sample generation from any checkpoint |
+| `scripts/local_cleanup.sh` | 6 | Run locally — polls S3 for completion marker, then terminates instance and cleans up |
 
 ---
 

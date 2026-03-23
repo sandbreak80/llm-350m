@@ -1,9 +1,17 @@
 #!/bin/bash
 # AWS instance bootstrap script
-# Run once after launching a fresh Deep Learning AMI instance
-# Usage: bash scripts/aws_setup.sh
+# Run once after launching a fresh Deep Learning AMI instance.
+#
+# Usage:
+#   1. source config.env          # set S3_BUCKET and other vars
+#   2. bash scripts/aws_setup.sh
 
 set -euo pipefail
+
+: "${S3_BUCKET:?S3_BUCKET is not set. Run: source config.env}"
+: "${AWS_REGION:=us-east-1}"
+: "${SSM_WANDB_KEY:=/llm/wandb_key}"
+: "${SSM_HF_TOKEN:=/llm/hf_token}"
 
 echo "=== LLM Training Environment Setup ==="
 
@@ -31,11 +39,10 @@ PYTHON="/opt/pytorch/bin/python"
 # (PyTorch 2.0+ uses Flash Attention 2 kernels natively via SDPA)
 
 # ── Credentials from SSM ─────────────────────────────────────────────────────
-REGION="us-east-1"
-S3_BUCKET="bstoner-llm-checkpoints-536277006919"
-
-WANDB_KEY=$(aws ssm get-parameter --name "llm-training-wandb-key" --with-decryption --query Parameter.Value --output text --region $REGION 2>/dev/null || echo "")
-HF_TOKEN=$(aws ssm get-parameter --name "llm-training-hf-token" --with-decryption --query Parameter.Value --output text --region $REGION 2>/dev/null || echo "")
+WANDB_KEY=$(aws ssm get-parameter --name "$SSM_WANDB_KEY" --with-decryption \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+HF_TOKEN=$(aws ssm get-parameter --name "$SSM_HF_TOKEN" --with-decryption \
+    --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
 if [ -n "$WANDB_KEY" ]; then
     /opt/pytorch/bin/wandb login "$WANDB_KEY" --relogin
@@ -83,13 +90,9 @@ aws s3 sync s3://${S3_BUCKET}/data/ data/ --quiet
 if [ -f data/pretrain/train.bin ]; then
     echo "Training data ready: $(du -sh data/pretrain/train.bin | cut -f1) train.bin"
 else
-    echo "No data in S3 yet — running prepare.py (this takes ~2 hours)..."
-    export HF_HOME=/home/ec2-user/hf_cache
-    export HF_DATASETS_CACHE=/home/ec2-user/hf_cache/datasets
-    "$PYTHON" src/data/prepare.py --dataset all
-    # Upload data to S3 for future restarts
-    aws s3 sync data/ s3://${S3_BUCKET}/data/ --quiet
-    echo "Training data uploaded to S3 for future restarts."
+    echo "No training data in S3 yet — run data prep manually:"
+    echo "  python src/data/prepare.py --dataset pretrain"
+    echo "  python src/data/prepare.py --dataset finetune"
 fi
 
 # Set up S3 checkpoint sync cron (every 5 minutes)
@@ -105,8 +108,6 @@ tmux send-keys -t train \
      HF_HOME=/data/hf_cache HF_DATASETS_CACHE=/data/hf_cache/datasets \
      HF_TOKEN=${HF_TOKEN:-} && \
      cd /home/ec2-user/llm-project && \
-     $PYTHON src/data/prepare.py --dataset all 2>&1 | tee /tmp/prepare.log && \
-     aws s3 sync /data/training_data s3://${S3_BUCKET}/data/ --quiet && \
      $PYTHON -u src/training/train.py --config configs/pretrain_350m.yaml 2>&1 | tee /tmp/train.log" \
     Enter
 

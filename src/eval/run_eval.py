@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -207,7 +208,7 @@ def main():
     parser.add_argument("--winogrande_samples", type=int, default=500)
     parser.add_argument("--full", action="store_true", help="Run full suite: HellaSwag+LAMBADA+ARC+WinoGrande")
     parser.add_argument("--wandb_project", type=str, default="llm-350m-pretrain")
-    parser.add_argument("--wandb_entity", type=str, default="bstoner-riffyx")
+    parser.add_argument("--wandb_entity", type=str, default=os.environ.get("WANDB_ENTITY", ""))
     args = parser.parse_args()
 
     print(f"\n=== Benchmark Eval: {args.checkpoint.name} ===")

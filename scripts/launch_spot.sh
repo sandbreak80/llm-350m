@@ -3,29 +3,34 @@
 # Spot instances are ~60-70% cheaper than on-demand — use for pretraining.
 # IMPORTANT: ensure checkpoints are saved to S3 so they survive interruptions.
 #
-# Usage: bash scripts/launch_spot.sh
-# Prerequisites: AWS CLI configured, key pair and security group created
+# Usage:
+#   1. source config.env          # set required variables
+#   2. bash scripts/launch_spot.sh
+#
+# Prerequisites: AWS CLI configured, key pair and security group already created.
+# Find your AMI ID at: EC2 > Launch Instance > search "Deep Learning OSS Nvidia Driver AMI GPU PyTorch"
 
 set -euo pipefail
 
-# ── Configuration — edit these ───────────────────────────────────────────────
-REGION="us-east-1"
-INSTANCE_TYPE="g5.xlarge"          # A10G 24GB VRAM, ~$1/hr on-demand
-SPOT_PRICE="0.60"                  # Max bid (on-demand ~$1.006, spot ~$0.35-0.60)
-AMI_ID="ami-0de4ae9106f688338"     # Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (AL2023) 20260307
-KEY_NAME="llm-training-key"        # EC2 key pair (~/.ssh/llm-training-key.pem)
-SECURITY_GROUP="sg-0debdff8b288db1fa"   # llm-training-sg (SSH from your IP only)
-SUBNET_ID="subnet-0277da3975efdf31d"    # us-east-1f — g5 available here
-S3_BUCKET="bstoner-llm-checkpoints-536277006919"
-IAM_INSTANCE_PROFILE="LLMTrainingProfile"
+: "${AWS_REGION:?AWS_REGION is not set. Run: source config.env}"
+: "${AMI_ID:?AMI_ID is not set. Find yours in EC2 > AMI Catalog}"
+: "${KEY_NAME:?KEY_NAME is not set (EC2 key pair name)}"
+: "${SECURITY_GROUP_ID:?SECURITY_GROUP_ID is not set}"
+: "${SUBNET_ID:?SUBNET_ID is not set}"
+: "${S3_BUCKET:?S3_BUCKET is not set}"
+: "${GITHUB_REPO:?GITHUB_REPO is not set (e.g. your-username/llm-350m)}"
+: "${INSTANCE_TYPE:=g5.xlarge}"    # A10G 24GB VRAM, ~$1/hr on-demand
+: "${SPOT_PRICE:=0.60}"            # Max bid; g5.xlarge on-demand ~$1.006/hr
+: "${IAM_INSTANCE_PROFILE:=LLMTrainingProfile}"
 
 # User data script — runs as root on instance boot
-USER_DATA=$(cat <<'USERDATA'
+USER_DATA=$(cat <<USERDATA
 #!/bin/bash
 set -e
 cd /home/ec2-user
-sudo -u ec2-user git clone https://github.com/sandbreak80/llm-350m.git llm-project
+sudo -u ec2-user git clone https://github.com/${GITHUB_REPO}.git llm-project
 cd llm-project
+export S3_BUCKET="${S3_BUCKET}" AWS_REGION="${AWS_REGION}"
 sudo -u ec2-user bash scripts/aws_setup.sh
 USERDATA
 )
@@ -36,12 +41,12 @@ ENCODED_USER_DATA=$(echo "$USER_DATA" | base64 -w 0)
 echo "Launching spot instance..."
 echo "Instance type: $INSTANCE_TYPE"
 echo "Max price: \$$SPOT_PRICE/hr"
-echo "Region: $REGION"
+echo "Region: $AWS_REGION"
 
-AWS="/c/Program Files/Amazon/AWSCLIV2/aws.exe"
+AWS="aws"
 
 "$AWS" ec2 request-spot-instances \
-    --region "$REGION" \
+    --region "$AWS_REGION" \
     --instance-count 1 \
     --type "one-time" \
     --launch-specification "{
@@ -49,7 +54,7 @@ AWS="/c/Program Files/Amazon/AWSCLIV2/aws.exe"
         \"InstanceType\": \"$INSTANCE_TYPE\",
         \"KeyName\": \"$KEY_NAME\",
         \"SubnetId\": \"$SUBNET_ID\",
-        \"SecurityGroupIds\": [\"$SECURITY_GROUP\"],
+        \"SecurityGroupIds\": [\"$SECURITY_GROUP_ID\"],
         \"IamInstanceProfile\": {\"Name\": \"$IAM_INSTANCE_PROFILE\"},
         \"UserData\": \"$ENCODED_USER_DATA\",
         \"BlockDeviceMappings\": [{
@@ -66,7 +71,7 @@ AWS="/c/Program Files/Amazon/AWSCLIV2/aws.exe"
 
 echo ""
 echo "Spot request submitted. Check status:"
-echo "  \"$AWS\" ec2 describe-spot-instance-requests --region $REGION"
+echo "  aws ec2 describe-spot-instance-requests --region $AWS_REGION"
 echo ""
 echo "Once running, SSH in and start training in tmux:"
 echo "  tmux new -s train"
