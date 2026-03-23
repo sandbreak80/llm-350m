@@ -41,6 +41,177 @@ If you're curious about how LLMs are built, or want a small open model to experi
 
 ---
 
+## How to Reproduce This Project
+
+Everything here is reproducible. If you want to run this yourself — the full pipeline from raw data to a published HuggingFace model — here's exactly how.
+
+### Prerequisites
+
+You'll need accounts for four services (all free tiers work):
+- **AWS** — for the GPU instance and S3 checkpoint storage
+- **HuggingFace** — to publish the final model ([huggingface.co](https://huggingface.co))
+- **Weights & Biases** — for training monitoring ([wandb.ai](https://wandb.ai))
+- **GitHub** — to store your code
+
+You'll also need the AWS CLI installed and configured locally (`aws configure`).
+
+### Estimated Cost
+
+| Phase | Time | Cost |
+|---|---|---|
+| Pretraining (60K iters, 15.7B tokens) | ~75 hrs | ~$290 |
+| Instruction finetuning (4,000 iters) | ~3.5 hrs | ~$12 |
+| Storage (EBS + S3) | — | ~$8 |
+| **Total** | | **~$310** |
+
+Instance used: `g6e.xlarge` — NVIDIA L40S 46GB, ~$3.80/hr on-demand. A cheaper alternative is `g5.xlarge` (A10G 24GB, ~$1/hr) which will work but train slower.
+
+---
+
+### High-Level Process
+
+There are 5 steps. Each maps to a script.
+
+```
+1. Spin up AWS instance       →  scripts/aws_setup.sh
+2. Prepare training data      →  src/data/prepare.py
+3. Pretrain the model         →  src/training/train.py
+4. Instruction finetune       →  src/training/finetune.py
+5. Export & publish           →  scripts/export_to_hf.py
+```
+
+---
+
+### Step-by-Step
+
+#### Step 1 — Launch and configure your AWS instance
+
+```bash
+# Launch a g6e.xlarge with the AWS Deep Learning AMI
+# (Deep Learning OSS Nvidia Driver AMI GPU PyTorch — comes with CUDA + PyTorch pre-installed)
+# Then SSH in and run:
+bash scripts/aws_setup.sh
+```
+
+`aws_setup.sh` does the following automatically:
+- Mounts the EBS data volume to `/data`
+- Installs Python dependencies (`pip install -e .`)
+- Authenticates with HuggingFace, W&B, and AWS via SSM Parameter Store
+- Sets up an S3 sync cron job (checkpoints sync every 5 minutes)
+
+You'll need to store your API tokens in AWS SSM Parameter Store before running:
+```bash
+aws ssm put-parameter --name "/llm/hf_token"  --value "hf_..."  --type SecureString
+aws ssm put-parameter --name "/llm/wandb_key" --value "..."      --type SecureString
+```
+
+#### Step 2 — Prepare training data
+
+```bash
+# Pretraining data (~18GB download, tokenizes to uint16 binary)
+python src/data/prepare.py --dataset pretrain --output_dir data/pretrain
+
+# Finetuning data (Alpaca-cleaned for V1, or OpenHermes for V2)
+python src/data/prepare.py --dataset finetune --output_dir data/finetune
+```
+
+This streams datasets from HuggingFace, tokenizes with the GPT-2 tiktoken encoder, and writes to memory-mapped binary files. Pretraining data takes ~1-2 hours to download and tokenize. Output is cached to S3 automatically so you never re-tokenize on restarts.
+
+#### Step 3 — Pretrain
+
+```bash
+python src/training/train.py --config configs/pretrain_350m.yaml
+```
+
+Runs for 60,000 iterations (~75 hours). Key things happening automatically:
+- **Checkpoints every 500 iterations** — saved locally and synced to S3
+- **SIGTERM handler** — if the instance is interrupted, an emergency checkpoint is saved before shutdown
+- **Auto-resume** — if you restart, training picks up from `checkpoints/pretrain/latest.pt`
+- **W&B logging** — loss, learning rate, gradient norm, and tokens/sec logged in real time
+- **Benchmark evals** — `scripts/eval_watcher.sh` runs as a cron job and fires HellaSwag/LAMBADA evals every 5,000 iterations on CPU while the GPU trains uninterrupted
+
+Monitor your run at [wandb.ai](https://wandb.ai). You can watch loss curve, GPU utilization, and benchmark scores update live.
+
+To monitor GPU directly on the instance:
+```bash
+nvidia-smi -l 5
+```
+
+#### Step 4 — Instruction finetune
+
+```bash
+python src/training/finetune.py --config configs/finetune_instruct.yaml
+```
+
+Starts from the pretrain checkpoint (`checkpoints/pretrain/latest.pt`) and runs SFT for 4,000 iterations (~3.5 hours). Key differences from pretraining:
+- **Loss masking** — only the model's response tokens contribute to loss, not the user prompt
+- **Anti-forgetting blend** — 10K FineWeb samples mixed in to prevent the model from forgetting pretraining knowledge
+- **Lower learning rate** — 1e-5 (vs 6e-4 for pretraining) to avoid overwriting pretrained weights
+- Best checkpoint saved to `checkpoints/finetune/best.pt` based on validation loss
+
+#### Step 5 — Export and publish to HuggingFace
+
+```bash
+python scripts/export_to_hf.py \
+    --checkpoint checkpoints/finetune/best.pt \
+    --repo_id YOUR_HF_USERNAME/your-model-name \
+    --output_dir hf_export \
+    --push
+```
+
+`export_to_hf.py` does the following:
+- Remaps weight names from our internal format to HuggingFace's `LlamaForCausalLM` format
+- Saves weights as `model.safetensors` (the standard HF format)
+- Generates `config.json` with the architecture metadata HF needs
+- Copies the GPT-2 tokenizer files
+- Creates the HuggingFace repo and uploads everything
+
+After this, your model is live at `huggingface.co/YOUR_USERNAME/your-model-name` and loadable with `AutoModelForCausalLM.from_pretrained()`.
+
+**Optional — convert to GGUF for local inference:**
+```bash
+# Build llama.cpp
+git clone https://github.com/ggerganov/llama.cpp && cd llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc) --target llama-quantize
+
+# Convert to GGUF formats
+python convert_hf_to_gguf.py ../hf_export --outfile model-f16.gguf --outtype f16
+./build/bin/llama-quantize model-f16.gguf model-q4_k_m.gguf Q4_K_M
+./build/bin/llama-quantize model-f16.gguf model-q8_0.gguf Q8_0
+```
+
+---
+
+### Script Reference
+
+| Script | What it does |
+|---|---|
+| `scripts/aws_setup.sh` | Bootstrap a fresh instance — installs deps, mounts EBS, authenticates services, starts S3 sync cron |
+| `scripts/launch_spot.sh` | Launch a spot instance (cheaper than on-demand, uses the same setup) |
+| `src/data/prepare.py` | Download and tokenize pretraining + finetuning datasets |
+| `src/training/train.py` | Pretraining loop — spot-resilient, auto-resumes, W&B logging |
+| `src/training/finetune.py` | SFT loop — loss masking on assistant turns, anti-forgetting blend |
+| `src/eval/run_eval.py` | Run HellaSwag, LAMBADA, ARC, WinoGrande benchmarks |
+| `scripts/eval_watcher.sh` | Cron script — fires evals automatically at checkpoint intervals |
+| `scripts/export_to_hf.py` | Remap weights to LlamaForCausalLM format and push to HuggingFace |
+| `scripts/generate.py` | Interactive inference and sample generation from a checkpoint |
+
+---
+
+### Configuration Files
+
+Training is configured via YAML files — no hardcoded hyperparameters:
+
+```
+configs/
+├── pretrain_350m.yaml      # Model size, batch size, LR schedule, data paths
+└── finetune_instruct.yaml  # SFT config — LR, iters, dataset, W&B project
+```
+
+Edit these to change model size, learning rate, dataset paths, or training duration without touching the training code.
+
+---
+
 ## Model Architecture
 
 The architecture is designed to be a modern improvement over GPT-2/nanoGPT-style models at the same parameter count. Every component was chosen based on what the research literature shows works at this scale.
