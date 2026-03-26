@@ -1,18 +1,26 @@
 """
 Benchmark evaluation for pretrained and finetuned LLM checkpoints.
 
-Runs HellaSwag, LAMBADA, ARC-Easy, ARC-Challenge, and WinoGrande on CPU,
-logs results to W&B under a dedicated "benchmark-evals" run.
+Runs HellaSwag, LAMBADA, ARC-Easy, ARC-Challenge, WinoGrande, and optionally
+HumanEval on CPU. Logs results to W&B and optionally saves to a JSON file.
 
 Usage:
+    # V2 baseline audit (Phase 0) — full suite including HumanEval
+    python src/eval/run_eval.py \\
+        --checkpoint checkpoints/v2/best.pt \\
+        --full --humaneval \\
+        --output_file evals/v2_baseline.json \\
+        --wandb_project llm-v3-dpo
+
     # Pretrain checkpoint (HellaSwag + LAMBADA only, fast)
     python src/eval/run_eval.py --checkpoint checkpoints/pretrain/ckpt_0040000.pt
 
-    # Finetune checkpoint (full suite)
+    # Finetune checkpoint (full suite, no HumanEval)
     python src/eval/run_eval.py --checkpoint checkpoints/finetune/best.pt --full --wandb_project llm-350m-finetune
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -207,6 +215,10 @@ def main():
     parser.add_argument("--arc_samples", type=int, default=500)
     parser.add_argument("--winogrande_samples", type=int, default=500)
     parser.add_argument("--full", action="store_true", help="Run full suite: HellaSwag+LAMBADA+ARC+WinoGrande")
+    parser.add_argument("--humaneval", action="store_true", help="Also run HumanEval pass@k (slow, requires --full)")
+    parser.add_argument("--humaneval_samples", type=int, default=20, help="Completions per HumanEval problem")
+    parser.add_argument("--humaneval_temp", type=float, default=0.8, help="Sampling temperature for HumanEval")
+    parser.add_argument("--output_file", type=Path, default=None, help="Save results as JSON to this path")
     parser.add_argument("--wandb_project", type=str, default="llm-350m-pretrain")
     parser.add_argument("--wandb_entity", type=str, default=os.environ.get("WANDB_ENTITY", ""))
     args = parser.parse_args()
@@ -244,6 +256,22 @@ def main():
         results["eval/winogrande_acc"] = winogrande_acc
         print(f"  → WinoGrande acc: {winogrande_acc*100:.2f}%")
 
+    if args.humaneval:
+        if not args.full:
+            print("\nNote: --humaneval requires --full; skipping.")
+        else:
+            from src.eval.code_eval import eval_humaneval
+            print(f"\nRunning HumanEval ({args.humaneval_samples} samples/problem, temp={args.humaneval_temp})...")
+            print("  This will take a while — 164 problems × samples × generation + execution.")
+            humaneval_results = eval_humaneval(
+                model,
+                n_samples=args.humaneval_samples,
+                temperature=args.humaneval_temp,
+            )
+            results.update(humaneval_results)
+            print(f"  → HumanEval pass@1:  {humaneval_results.get('humaneval/pass@1', 0)*100:.2f}%")
+            print(f"  → HumanEval pass@10: {humaneval_results.get('humaneval/pass@10', 0)*100:.2f}%")
+
     # Summary
     print(f"\n{'='*50}")
     print(f"RESULTS SUMMARY — {args.checkpoint.name} (iter {iteration:,})")
@@ -255,6 +283,18 @@ def main():
         else:
             print(f"  {label:<20} {v:.4f}")
     print(f"{'='*50}")
+
+    # Save to JSON if requested
+    if args.output_file:
+        args.output_file.parent.mkdir(parents=True, exist_ok=True)
+        output = {
+            "checkpoint": str(args.checkpoint),
+            "iteration": iteration,
+            "results": results,
+        }
+        with open(args.output_file, "w") as f:
+            json.dump(output, f, indent=2)
+        print(f"\nResults saved to {args.output_file}")
 
     # Log to W&B
     try:

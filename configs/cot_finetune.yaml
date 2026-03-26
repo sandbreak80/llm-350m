@@ -1,0 +1,38 @@
+# CoT SFT — Phase 2
+# Stacks on DPO checkpoint. Teaches the model to show reasoning with <think> blocks.
+#
+# Key metric: ARC-Challenge at each eval checkpoint. Target >33% by iter 1500.
+# If model generates <think> in wrong contexts: increase anti_forgetting_ratio in cot_prepare.py
+#
+# Data sources (built by cot_prepare.py):
+#   - NuminaMath-CoT: 20K math problems with <think> wrapped solutions
+#   - OpenHermes-2.5: 30K filtered CoT responses (multi-step reasoning)
+#   - FineWeb-Edu:    10K anti-forgetting samples
+
+pretrain_checkpoint: checkpoints/dpo/best.pt   # Starts from DPO, not raw pretrain
+data_dir:  data/cot
+output_dir: checkpoints/cot
+
+# Slightly lower LR than V2 SFT — stacking on DPO, be conservative
+learning_rate: 1.0e-5
+min_lr:        1.0e-6
+warmup_iters:  0
+max_iters:     2000
+beta1:         0.9
+beta2:         0.95
+weight_decay:  0.01
+grad_clip:     1.0
+
+batch_size:                  4
+gradient_accumulation_steps: 32
+
+# Light dropout — CoT data is high quality, less regularization needed
+dropout: 0.05
+
+log_interval:  50
+eval_interval: 200
+eval_iters:    50
+
+wandb_project: llm-v3-cot
+compile: false   # torch.compile hangs on custom RoPE/GQA ops
+seed: 42

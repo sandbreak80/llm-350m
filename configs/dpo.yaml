@@ -1,0 +1,40 @@
+# DPO alignment — Phase 1
+# Starts from V2 checkpoint. Trains on intel/orca_dpo_pairs (GPT-4 quality preference pairs).
+#
+# Key metric: dpo/reward_margin — must be positive and trending up.
+# Troubleshooting:
+#   - Margin flat or negative → halve learning_rate, or raise beta to 0.2
+#   - Margin spikes then collapses → lower learning_rate
+#   - Margin positive but tiny → normal for early iters, watch for 50+ iter trend
+
+checkpoint:     checkpoints/v2/best.pt
+ref_checkpoint: checkpoints/v2/best.pt   # Same file, loaded frozen — do not change
+output_dir:     checkpoints/dpo
+
+data_dir:   data/dpo
+max_length: 1024                          # Preference pairs are shorter than SFT sequences
+
+# DPO
+beta: 0.1                                 # KL penalty. Raise to 0.2 if margin is flat.
+
+# Optimization — much lower than SFT
+learning_rate: 5.0e-6
+min_lr:        5.0e-7
+max_iters:     800
+beta1:         0.9
+beta2:         0.95
+weight_decay:  0.01
+grad_clip:     1.0
+
+# Batch — effective batch = batch_size × gradient_accumulation_steps = 32 sequences
+batch_size:                  2
+gradient_accumulation_steps: 16
+
+# Logging
+log_interval:        10
+eval_interval:       50
+eval_iters:          25
+checkpoint_interval: 100
+
+wandb_project: llm-v3-dpo
+seed: 42

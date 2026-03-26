@@ -1,0 +1,52 @@
+# RLVR code training — Phase 3
+# Stacks on CoT checkpoint. Uses GRPO with sandboxed code execution as reward signal.
+#
+# Key metrics (W&B project: llm-v3-rlvr):
+#   rlvr/mean_reward  — should trend upward (noisy — that's normal for RL)
+#   rlvr/pass_rate    — fraction of problems with at least one passing solution
+#   rlvr/reward_std   — should decrease as policy becomes more consistent
+#
+# COLLAPSE: reward_std → 0 AND mean_reward → 0 = degenerate policy
+#   Fix: reduce kl_beta to 0.02, or increase syntax_reward to 0.2
+#
+# Phase 3 requires a separate CPU sandbox instance (c6i.xlarge) for code execution.
+# NEVER run generated code on the training GPU instance.
+
+checkpoint:     checkpoints/cot/best.pt
+ref_checkpoint: checkpoints/v2/best.pt   # Stable KL anchor — V2 before CoT/DPO stacking
+output_dir:     checkpoints/rlvr
+
+data_dir: data/rlvr
+
+# GRPO
+n_samples:   4      # Solutions per problem per step — more = better signal, slower
+temperature: 0.8
+kl_beta:     0.04   # KL penalty. Reduce to 0.02 if reward collapses.
+
+# Optimization — very conservative for RL stability
+learning_rate: 2.0e-6
+min_lr:        5.0e-7
+max_epochs:    5
+beta1:         0.9
+beta2:         0.95
+weight_decay:  0.01
+grad_clip:     1.0
+grad_accum:    8
+
+# Sandbox (runs on separate CPU instance)
+sandbox_timeout_sec: 5
+sandbox_memory_mb:   256
+
+# Partial reward for syntactically valid code
+# Prevents reward collapse when model can't solve problems
+# 0.1 = 10% credit for valid syntax, 100% credit for passing tests
+syntax_reward: 0.1
+
+# Logging
+log_interval:        20
+eval_interval:       100
+checkpoint_interval: 50
+
+wandb_project: llm-v3-rlvr
+max_new_tokens: 256
+seed: 42
